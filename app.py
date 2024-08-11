@@ -45,6 +45,7 @@ from linebot.v3.messaging import (
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.prompts import PromptTemplate
+from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader
 from dotenv import load_dotenv
 import requests
 import os
@@ -89,13 +90,34 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+    pdf_loader = PyMuPDFLoader('./doc/行程_名古屋.pdf')
+    pdf_doc = pdf_loader.load()
+    
+    # 將所有頁面的文本合併成一個字符串
+    pdf_combined_text = "\n".join([page.page_content for page in pdf_doc])
+
+    word_loader = Docx2txtLoader("./doc/行程_東京.docx")
+    word_doc = word_loader.load()
+    word_combined_text = "\n".join([page.page_content for page in word_doc])
+ 
     chat_template = ChatPromptTemplate.from_messages(
     [  
-        ("system","""
-            你是一位經驗豐富的旅遊規劃專家，專注於為各類遊客提供量身定制的旅遊行程。
-            請詳細描述每一天的行程安排，包括參觀的景點、推薦的餐廳。
-            請用條列式請用條列式，並保持精簡。
+        ("system",f"""
+            你是一個旅遊行程助理，若使用者提問名古屋行程，則到[名古屋行程]檢索資料，若使用者提問東京行程，則到[東京行程]檢索資料，
+            請使用繁體中文回答。
+            
+            [名古屋行程]
+            {pdf_combined_text}
+
+            [東京行程]
+            {word_combined_text}
+            
+            ## 注意
+            確認回答的內容在[名古屋行程]、 [東京行程]區段內。
+            最後請一步一步思考，確認回答的內容都來自以上參考資料且正確無誤。
          """),
+        ('human', pdf_combined_text),
+        ('human', pdf_combined_text),
         ('human', '{question}'),
     ])
     

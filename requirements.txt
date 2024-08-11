@@ -3,3 +3,8 @@ flask
 langchain
 langchain-openai
 langchain-core
+langchain-community 
+python-dotenv
+pymupdf
+rapidocr-onnxruntime
+docx2txt
