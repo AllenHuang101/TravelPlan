@@ -57,18 +57,14 @@ load_dotenv()
 channel_secret = os.getenv("CHANNEL_SECRET")
 channel_access_token = os.getenv("CHANNEL_ACCESS_TOKEN")
 
-# OpenAI API Key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ORGANIZATION_ID = os.getenv("ORGANIZATION_ID")
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-os.environ["OPENAI_ORGANIZATION"] = ORGANIZATION_ID
-
 parser = WebhookParser(channel_secret)
 
 configuration = Configuration(
     access_token=channel_access_token
 )
 handler = WebhookHandler(channel_secret)
+
+store = {}
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -90,48 +86,82 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    pdf_loader = PyMuPDFLoader('./doc/行程_名古屋.pdf')
-    pdf_doc = pdf_loader.load()
-    
-    # 將所有頁面的文本合併成一個字符串
-    pdf_combined_text = "\n".join([page.page_content for page in pdf_doc])
+    user_id = event.source.user_id
+    message = event.message.text 
 
-    word_loader = Docx2txtLoader("./doc/行程_東京.docx")
-    word_doc = word_loader.load()
-    word_combined_text = "\n".join([page.page_content for page in word_doc])
- 
-    chat_template = ChatPromptTemplate.from_messages(
-    [  
-        ("system",f"""
-            你是一個旅遊行程助理，若使用者提問名古屋行程，則到[名古屋行程]檢索資料，若使用者提問東京行程，則到[東京行程]檢索資料，
-            請使用繁體中文回答。
-            
-            [名古屋行程]
-            {pdf_combined_text}
-
-            [東京行程]
-            {word_combined_text}
-            
-            ## 注意
-            確認回答的內容在[名古屋行程]、 [東京行程]區段內。
-            最後請一步一步思考，確認回答的內容都來自以上參考資料且正確無誤。
-         """),
-        ('human', pdf_combined_text),
-        ('human', pdf_combined_text),
-        ('human', '{question}'),
-    ])
-    
-
-    with ApiClient(configuration) as api_client:
+    with ApiClient(configuration) as api_client: 
         line_bot_api = MessagingApi(api_client)
-        line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chatId=event.source.user_id, loadingSeconds=20))
         
-        message = event.message.text
-        chatMessages = chat_template.format_messages(question=message)
+        if(message.strip()=="東京行程" or message.strip()=="名古屋行程"):
+            store[user_id] = message.strip()
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"您好，我是您的旅遊助理，你可以問我任何【{message.strip()}】的問題")]
+                )
+            )
+            return 
+    
+        pdf_loader = PyMuPDFLoader('./doc/行程_名古屋.pdf')
+        pdf_doc = pdf_loader.load()
+        
+        # 將所有頁面的文本合併成一個字符串
+        pdf_combined_text = "\n".join([page.page_content for page in pdf_doc])
+
+        word_loader = Docx2txtLoader("./doc/行程_東京.docx")
+        word_doc = word_loader.load()
+        word_combined_text = "\n".join([page.page_content for page in word_doc])
+    
+        context = ""
+        
+        if user_id not in store:
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"您好，請先選擇【東京行程】或【名古屋行程】")]
+                )
+            )
+            return
+        else:
+            if(store[user_id]=="東京行程"):
+                context = f"""
+                    [東京行程]
+                    {word_combined_text}
+                """
+            else:
+                context = f"""
+                    [名古屋行程]
+                    {pdf_combined_text}
+                """
+        
+        chat_template = ChatPromptTemplate.from_messages(
+        [  
+            ("system","""
+                你是一個旅遊行程助理，若使用者提問名古屋行程，則到[名古屋行程]檢索資料，若使用者提問東京行程，則到[東京行程]檢索資料，
+                請使用繁體中文回答。
+                
+                <context>
+                    {context}
+                </context>
+
+                ## 注意
+                確認回答的內容在[名古屋行程]、 [東京行程]區段內。
+                最後請一步一步思考，確認回答的內容都來自以上參考資料且正確無誤。
+            """),
+            ('human', "我要問{plan}"),
+            ('human', '{question}'),
+        ])
+        
+ 
+        line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chatId=user_id, loadingSeconds=20))
+        
+        
+        chatMessages = chat_template.format_messages(context=context, plan = store[user_id],question=message)
+       
         llm = ChatOpenAI(model="gpt-4o", temperature=0)
         result = llm.invoke(chatMessages)
 
-      
+        
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
