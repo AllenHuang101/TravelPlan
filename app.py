@@ -16,7 +16,6 @@
 import os
 import sys
 from argparse import ArgumentParser
-
 from flask import Flask, request, abort
 
 from linebot.v3 import (
@@ -41,15 +40,18 @@ from linebot.v3.messaging import (
     TextMessage,
     ShowLoadingAnimationRequest
 )
-
+from uuid import UUID
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.prompts import PromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.runnables import ConfigurableFieldSpec
 from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader
 from langchain_core.output_parsers import StrOutputParser
+
 from dotenv import load_dotenv
-import requests
 import os
+from memory import get_session_history
 
 app = Flask(__name__)
 load_dotenv()
@@ -65,7 +67,7 @@ configuration = Configuration(
 )
 handler = WebhookHandler(channel_secret)
 
-store = {}
+jonery_store = {}
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -81,8 +83,6 @@ def callback():
     except InvalidSignatureError:
         app.logger.info("Invalid signature. Please check your channel access token/channel secret.")
         abort(400)
-
-
     return 'OK'
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -94,7 +94,8 @@ def handle_message(event):
         line_bot_api = MessagingApi(api_client)
         
         if(message.strip()=="東京行程" or message.strip()=="名古屋行程"):
-            store[user_id] = message.strip()
+            jonery_store[user_id] = message.strip()
+                
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -115,7 +116,7 @@ def handle_message(event):
     
         context = ""
         
-        if user_id not in store:
+        if user_id not in jonery_store:
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -124,7 +125,7 @@ def handle_message(event):
             )
             return
         else:
-            if(store[user_id]=="東京行程"):
+            if(jonery_store[user_id]=="東京行程"):
                 context = f"""
                     [東京行程]
                     {word_combined_text}
@@ -137,7 +138,7 @@ def handle_message(event):
         
         line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chatId=user_id, loadingSeconds=20))
 
-        # 1.構建組件
+        # 1.構建樣板
         prompt = ChatPromptTemplate.from_messages(
         [  
             ("system","""
@@ -152,8 +153,9 @@ def handle_message(event):
                 確認回答的內容在[名古屋行程]、 [東京行程]區段內。
                 最後請一步一步思考，確認回答的內容都來自以上參考資料且正確無誤。
             """),
+            MessagesPlaceholder(variable_name="history"),
             ('human', "我要問{plan}"),
-            ('human', '{question}'),
+            ('human', '{query}'),
         ])
         
 
@@ -162,20 +164,47 @@ def handle_message(event):
         # 2. 創建鏈
         chain = prompt | llm | StrOutputParser()
 
+        # 3. 加入記憶
+        with_history_chain = RunnableWithMessageHistory(
+            chain,
+            get_session_history,
+            input_messages_key="query",
+            history_messages_key="history",
+            history_factory_config=[
+                ConfigurableFieldSpec(
+                    id="session_id",
+                    annotation=str,
+                    name="Session ID",
+                    default="",
+                    is_shared=True,
+                ),
+                ConfigurableFieldSpec(
+                    id="plan",
+                    annotation=str,
+                    name="plan",
+                    default="",
+                    is_shared=True,
+                )
+            ]
+        )
+        
         # 3. 調用鏈得到結果
-        result = chain.invoke({
-            "context": context,
-            "plan": store[user_id],
-            "question": message
-        })
-
+        result = with_history_chain.invoke(
+            {
+                "context": context,
+                "plan": jonery_store[user_id],
+                "query": message
+            }, 
+            config={"configurable": {"session_id": user_id, "plan": jonery_store[user_id]}}
+        )
+            
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[TextMessage(text=result)]
             )
         )
-        
+                
 
 if __name__ == "__main__":
     arg_parser = ArgumentParser(
