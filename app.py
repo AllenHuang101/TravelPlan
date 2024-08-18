@@ -44,8 +44,9 @@ from linebot.v3.messaging import (
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate, MessagesPlaceholder
 from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader
+from langchain_core.output_parsers import StrOutputParser
 from dotenv import load_dotenv
 import requests
 import os
@@ -134,7 +135,10 @@ def handle_message(event):
                     {pdf_combined_text}
                 """
         
-        chat_template = ChatPromptTemplate.from_messages(
+        line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chatId=user_id, loadingSeconds=20))
+
+        # 1.構建組件
+        prompt = ChatPromptTemplate.from_messages(
         [  
             ("system","""
                 你是一個旅遊行程助理，若使用者提問名古屋行程，則到[名古屋行程]檢索資料，若使用者提問東京行程，則到[東京行程]檢索資料，
@@ -152,20 +156,23 @@ def handle_message(event):
             ('human', '{question}'),
         ])
         
- 
-        line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chatId=user_id, loadingSeconds=20))
-        
-        
-        chatMessages = chat_template.format_messages(context=context, plan = store[user_id],question=message)
-       
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)
-        result = llm.invoke(chatMessages)
 
+        llm = ChatOpenAI(model="gpt-4o", temperature=0)
         
+        # 2. 創建鏈
+        chain = prompt | llm | StrOutputParser()
+
+        # 3. 調用鏈得到結果
+        result = chain.invoke({
+            "context": context,
+            "plan": store[user_id],
+            "question": message
+        })
+
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=result.content)]
+                messages=[TextMessage(text=result)]
             )
         )
         
