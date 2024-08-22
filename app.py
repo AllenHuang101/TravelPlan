@@ -12,11 +12,12 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
-
 import os
-import sys
+import uuid
+from pydantic import Field
+
 from argparse import ArgumentParser
-from flask import Flask, request, abort
+from flask import Flask, request, abort, send_from_directory
 
 from linebot.v3 import (
     WebhookHandler
@@ -38,6 +39,7 @@ from linebot.v3.messaging import (
     MessagingApi,
     ReplyMessageRequest,
     TextMessage,
+    AudioMessage,
     ShowLoadingAnimationRequest
 )
 from uuid import UUID
@@ -47,11 +49,13 @@ from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.runnables import ConfigurableFieldSpec
 from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import JsonOutputParser
+from openai import BaseModel
 
 from dotenv import load_dotenv
 import os
 from memory import get_session_history
+from video import generate_audio
 
 app = Flask(__name__)
 load_dotenv()
@@ -59,6 +63,7 @@ load_dotenv()
 # get channel_secret and channel_access_token from your environment variable
 channel_secret = os.getenv("CHANNEL_SECRET")
 channel_access_token = os.getenv("CHANNEL_ACCESS_TOKEN")
+host = "https://travelplandemo-gfexcbbadaaad5c9.eastus-01.azurewebsites.net"
 
 parser = WebhookParser(channel_secret)
 
@@ -69,6 +74,11 @@ handler = WebhookHandler(channel_secret)
 
 jonery_store = {}
 
+# Define your desired data structure.
+class TravelReply(BaseModel):
+    Answer: str = Field(description="詳細版回答")
+    ShortAnswer: str = Field(description="精簡版回答")
+    
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -92,7 +102,7 @@ def handle_message(event):
 
     with ApiClient(configuration) as api_client: 
         line_bot_api = MessagingApi(api_client)
-        
+       
         if(message.strip()=="東京行程" or message.strip()=="名古屋行程"):
             jonery_store[user_id] = message.strip()
                 
@@ -135,23 +145,56 @@ def handle_message(event):
                     [名古屋行程]
                     {pdf_combined_text}
                 """
-        
+
         line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chatId=user_id, loadingSeconds=20))
 
         # 1.構建樣板
         prompt = ChatPromptTemplate.from_messages(
         [  
             ("system","""
-                你是一個旅遊行程助理，若使用者提問名古屋行程，則到[名古屋行程]檢索資料，若使用者提問東京行程，則到[東京行程]檢索資料，
-                請使用繁體中文回答。
+                你是一個旅遊行程助理，請檢索context區塊結果，生成兩個版本的回答，並以 JSON 格式輸出。
+                {{
+                    "Answer": "詳細版回答",
+                    "ShortAnswer": "精簡版回答"
+                }}
+                
+                1. 詳細版回答：請提供全面且詳細的回答，涵蓋所有相關的背景信息、細節和例子，將其放進 Answer 欄位。
+                2. 精簡版回答：請提取出最關鍵的要點，並用簡短的語句進行總結，將其放進 ShowAnswer 欄位。
+                
+                若沒有檢索到相關資料、無法回答，無論如何，依然**務必**要使用 JSON 格式輸出
+                {{
+                    "Answer": "...",
+                    "ShortAnswer": "..."
+                }}
+                
+                若答案參考記憶，依然**務必**要使用 JSON 格式輸出
+                {{
+                    "Answer": "...",
+                    "ShortAnswer": "..."
+                }}
                 
                 <context>
                     {context}
                 </context>
 
+                ## 輸出 Json 格式
+                {{
+                    "Answer": "詳細版回答",
+                    "ShortAnswer": "精簡版回答"
+                }}
+                
                 ## 注意
-                確認回答的內容在[名古屋行程]、 [東京行程]區段內。
-                最後請一步一步思考，確認回答的內容都來自以上參考資料且正確無誤。
+                1. 確認回答的內容在 Context 區段內。
+                2. 請一步一步思考，確認回答的內容都來自以上參考資料且正確無誤。
+                3. **務必**生成兩個版本的答案，並將結果分別放入 Answer、ShortAnswer。
+                4. 請**務必**將答案中的 ###、** 語法移除：
+                   範例1:### 厥餅，移除後為 厥餅。
+                   範例2:**店名**，移除後為 店名。
+                    
+                ## 重要
+                請再次確認輸出內容是否使用 {{"Answer": "詳細版回答", "ShortAnswer": "精簡版回答"}} JSON 輸出，否則系統會Crash，後果會非常嚴重。   
+                   
+                {format_instructions}
             """),
             MessagesPlaceholder(variable_name="history"),
             ('human', "我要問{plan}"),
@@ -160,9 +203,11 @@ def handle_message(event):
         
 
         llm = ChatOpenAI(model="gpt-4o", temperature=0)
-        
+        parser = JsonOutputParser(pydantic_object=TravelReply)
+                
         # 2. 創建鏈
-        chain = prompt | llm | StrOutputParser()
+        # chain = prompt | llm | StrOutputParser()
+        chain = prompt | llm | parser
 
         # 3. 加入記憶
         with_history_chain = RunnableWithMessageHistory(
@@ -193,18 +238,37 @@ def handle_message(event):
             {
                 "context": context,
                 "plan": jonery_store[user_id],
-                "query": message
+                "query": message,
+                "format_instructions": parser.get_format_instructions()
             }, 
             config={"configurable": {"session_id": user_id, "plan": jonery_store[user_id]}}
         )
-            
+
+        print(result)
+        # 4. 透過 OpenAI TTS 產生音檔
+        file_name = f"{user_id}-{uuid.uuid4()}.mp3"
+        file_path = f"./audio/{file_name}"
+        audio = generate_audio(file_path, result.get("ShortAnswer"))      
+        length = int(audio.info.length * 1000)
+    
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=result)]
+                messages=[
+                    TextMessage(text=result.get("Answer")),
+                    AudioMessage(
+                        type="audio",
+                        originalContentUrl = f'{host}/audio/{file_name}',
+                        duration=length
+                    )
+                    ]
             )
         )
                 
+# 提供本地音訊檔案的路由
+@app.route('/audio/<filename>')
+def get_audio(filename):
+    return send_from_directory(directory='./audio', path=filename)
 
 if __name__ == "__main__":
     arg_parser = ArgumentParser(
@@ -215,3 +279,6 @@ if __name__ == "__main__":
     options = arg_parser.parse_args()
 
     app.run(debug=options.debug, port=options.port)
+    
+    
+    

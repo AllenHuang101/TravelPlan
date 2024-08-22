@@ -1,0 +1,4 @@
+{
+    "appService.defaultWebAppToDeploy": "/subscriptions/675e728a-07f7-4bdb-a2d7-a0a924d0b40c/resourceGroups/rg-travel/providers/Microsoft.Web/sites/travelplandemo",
+    "appService.deploySubpath": "."
+}

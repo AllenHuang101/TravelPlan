@@ -8,3 +8,6 @@ python-dotenv
 pymupdf
 rapidocr-onnxruntime
 docx2txt
+openai
+mutagen
+pydantic

@@ -5,5 +5,5 @@ history_store = {}
 
 def get_session_history(session_id: str, plan: str) -> BaseChatMessageHistory:
     if (session_id, plan) not in history_store:
-        history_store[(session_id, plan)] = FileChatMessageHistory(f"./history/chat_history_{session_id}_{plan}.txt")
+        history_store[(session_id, plan)] = FileChatMessageHistory(f"./history/chat_history_{session_id}_{plan}.txt", encoding="utf-8")
     return history_store[(session_id, plan)]
