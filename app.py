@@ -49,8 +49,9 @@ from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.runnables import ConfigurableFieldSpec
 from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from openai import BaseModel
+from langchain_community.utilities import GoogleSerperAPIWrapper
 
 from dotenv import load_dotenv
 import os
@@ -63,7 +64,9 @@ load_dotenv()
 # get channel_secret and channel_access_token from your environment variable
 channel_secret = os.getenv("CHANNEL_SECRET")
 channel_access_token = os.getenv("CHANNEL_ACCESS_TOKEN")
-host = "https://travelplandemo-gfexcbbadaaad5c9.eastus-01.azurewebsites.net"
+host = "https://travel-plan-deecdwgvdwgpdzcz.eastus-01.azurewebsites.net"
+# host = "https://6605-49-216-32-22.ngrok-free.app"
+
 
 parser = WebhookParser(channel_secret)
 
@@ -152,12 +155,12 @@ def handle_message(event):
         prompt = ChatPromptTemplate.from_messages(
         [  
             ("system","""
-                你是一個旅遊行程助理，請檢索context區塊結果，生成兩個版本的回答，並以 JSON 格式輸出。
+                你是一個旅遊行程助理，請檢索context區塊及Google Search結果，生成兩個版本的回答，並以 JSON 格式輸出。
                 {{
                     "Answer": "詳細版回答",
                     "ShortAnswer": "精簡版回答"
                 }}
-                
+     
                 1. 詳細版回答：請提供全面且詳細的回答，涵蓋所有相關的背景信息、細節和例子，將其放進 Answer 欄位。
                 2. 精簡版回答：請提取出最關鍵的要點，並用簡短的語句進行總結，將其放進 ShowAnswer 欄位。
                 
@@ -173,10 +176,13 @@ def handle_message(event):
                     "ShortAnswer": "..."
                 }}
                 
+                Google Search 結果：
+                {search}
+                
                 <context>
                     {context}
                 </context>
-
+                
                 ## 輸出 Json 格式
                 {{
                     "Answer": "詳細版回答",
@@ -193,18 +199,39 @@ def handle_message(event):
                     
                 ## 重要
                 請再次確認輸出內容是否使用 {{"Answer": "詳細版回答", "ShortAnswer": "精簡版回答"}} JSON 輸出，否則系統會Crash，後果會非常嚴重。   
-                   
+                           
                 {format_instructions}
+                
+                若使用者問附近景點或附近美食，請用條列式回答問題。
             """),
             MessagesPlaceholder(variable_name="history"),
             ('human', "我要問{plan}"),
             ('human', '{query}'),
         ])
         
-
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        is_search_prompt = ChatPromptTemplate.from_messages(
+        [  
+            ("system","""
+              若使用者問附近景點或附近美食，則回答 Y，否則回答 N。
+            """),
+            ('human', '{query}')
+        ])
+        
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)  
         parser = JsonOutputParser(pydantic_object=TravelReply)
-                
+        
+        nearby_chain = is_search_prompt | llm | StrOutputParser()
+        is_nearby_quest = nearby_chain.invoke({
+            "query": message
+        })
+        print(is_nearby_quest)
+        
+        searchResult = ""
+        if is_nearby_quest == "Y":
+            search = GoogleSerperAPIWrapper()
+            searchResult = search.run(message)
+            # print(searchResult)
+                     
         # 2. 創建鏈
         # chain = prompt | llm | StrOutputParser()
         chain = prompt | llm | parser
@@ -237,6 +264,7 @@ def handle_message(event):
         result = with_history_chain.invoke(
             {
                 "context": context,
+                "search": searchResult,
                 "plan": jonery_store[user_id],
                 "query": message,
                 "format_instructions": parser.get_format_instructions()
@@ -245,6 +273,7 @@ def handle_message(event):
         )
 
         print(result)
+        
         # 4. 透過 OpenAI TTS 產生音檔
         file_name = f"{user_id}-{uuid.uuid4()}.mp3"
         file_path = f"./audio/{file_name}"
