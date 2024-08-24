@@ -122,10 +122,12 @@ def handle_message(event):
         
         # 將所有頁面的文本合併成一個字符串
         pdf_combined_text = "\n".join([page.page_content for page in pdf_doc])
-
+        pdf_combined_text = pdf_combined_text.replace("###").replace("**")
+ 
         word_loader = Docx2txtLoader("./doc/行程_東京.docx")
         word_doc = word_loader.load()
         word_combined_text = "\n".join([page.page_content for page in word_doc])
+        word_combined_text = word_combined_text.replace("###").replace("**")
     
         context = ""
         
@@ -161,7 +163,7 @@ def handle_message(event):
                     "ShortAnswer": "精簡版回答"
                 }}
      
-                1. 詳細版回答：請提供全面且詳細的回答，涵蓋所有相關的背景信息、細節和例子，將其放進 Answer 欄位。
+                1. 詳細版回答：請提供全面且詳細的回答，涵蓋所有相關的背景信息、細節和例子，**務必**保留**全部**網址訊息，將其放進 Answer 欄位。
                 2. 精簡版回答：請提取出最關鍵的要點，並用簡短的語句進行總結，將其放進 ShowAnswer 欄位。
                 
                 若沒有檢索到相關資料、無法回答，無論如何，依然**務必**要使用 JSON 格式輸出
